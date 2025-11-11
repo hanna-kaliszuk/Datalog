@@ -4,9 +4,9 @@ import java.util.*;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 
 import cp2025.engine.Datalog.*;
-
 
 public class ParallelDeriver implements AbstractDeriver {
     private final int numWorkers;
@@ -36,18 +36,36 @@ public class ParallelDeriver implements AbstractDeriver {
             if (Thread.interrupted()) {
                 return;
             }
-            try{
-                while(!toProcess.isEmpty()) { // dopóki nie wszystkie atomy zostały przetworzone
+            try {
+                while (!toProcess.isEmpty()) { // dopóki nie wszystkie atomy zostały przetworzone
                     Atom atom = toProcess.take(); // bierzemy kolejny atom do przetworzenia
-                    if (!knownStatements.containsKey(atom)) { // jeżeli nikt nie policzył jeszcze wartości tego atomu
-                        // wpisujemy siebie jako odpowiedzialnego za jego obliczenie
-                        liders.putIfAbsent(atom, Thread.currentThread());
+                    CompletableFuture<Boolean> newFuture = new CompletableFuture<>();
+                    CompletableFuture<Boolean> existingFuture = knownStatements.computeIfAbsent(atom, a -> newFuture);
+                    boolean IamLeader = (existingFuture == newFuture); // jeżeli to my jesteśmy liderami, to zanczy
+                    // że existingFuture będzie nowo utworzonym CompletableFuturem
 
+                    if (IamLeader) {
+                        if (oracle.isCalculatable(atom.predicate())) {
+                            // obliczamy tą wartość i wkładamy do mapy
+                            boolean value = oracle.calculate(atom);
+                            existingFuture.complete(value); // wstawiamy wynik i odblokowywujemy inne wątki czekające
+                            // na wynik
+                        }
+                    } else {
+                        // czekamy na wynik obliczony przez lidera
+                        try {
+                            boolean value = existingFuture.get(); // blokujemy się w oczekiwaniu na wynik dostarczany
+                            // przez lidera
+                        } catch (ExecutionException e) {
+                            throw new RuntimeException(e);
+                        }
                     }
 
+
+
+
                 }
-            }
-            catch (InterruptedException e) {
+            } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
         }
