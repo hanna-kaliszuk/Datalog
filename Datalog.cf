@@ -1,0 +1,36 @@
+{-
+This file contains the grammar of simple Datalog.
+This is used to generate the parser with BNFC.
+
+For details on BNFC, see: https://bnfc.readthedocs.io/en/latest/
+-}
+
+
+comment "//" ;
+
+token LIdent  (lower (lower | digit | '_')*) ;
+token UIdent  (upper (upper | digit | '_')*) ;
+token LSIdent (lower (letter | digit | '_')*) ;
+
+Program.      ProgramDef ::= ConstantsDef RulesDef QueriesDef;
+
+Constants.    ConstantsDef ::= "Constants:" [LIdent] ;
+separator LIdent ",";
+
+Rules.        RulesDef ::= "Rules:" [RuleDef];
+terminator RuleDef ".";
+Rule.         RuleDef ::= AtomDef ":-" [AtomDef];
+separator AtomDef ",";
+Atom.         AtomDef ::= PredicateDef "(" [Element] ")" ;
+separator Element ",";
+ConstElement. Element ::= LIdent;
+VarElement.   Element ::= UIdent;
+
+LPredicate.   PredicateDef ::= LIdent;
+LSPredicate.  PredicateDef ::= LSIdent;
+
+Queries.      QueriesDef ::= "Queries:" [StatementDef];
+separator StatementDef ",";
+Statement.    StatementDef ::= PredicateDef "(" [LIdent] ")";
+
+entrypoints ProgramDef;
