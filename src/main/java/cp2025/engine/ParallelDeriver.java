@@ -11,7 +11,7 @@ public class ParallelDeriver implements AbstractDeriver {
     public ParallelDeriver(int numWorkers) { this.numWorkers = numWorkers; }
 
     private static class Worker implements Runnable {
-        private BlockingQueue<Atom> toProcess = new LinkedBlockingQueue<>(); // współdzielona kolejka atomów do przerobienia
+        private BlockingQueue<Atom> toProcess; // współdzielona kolejka atomów do przerobienia
         private ConcurrentHashMap<Atom, CompletableFuture<Boolean>> knownStatements; // współdzielona mapa do wpisywania policzonych w trakcie wyników
         private ConcurrentHashMap<Atom, Thread> liders; // współdzielona mapa liderów dla każdego obecnie obliczanego atomu
         private Program program;
@@ -24,7 +24,6 @@ public class ParallelDeriver implements AbstractDeriver {
             this.liders = liders;
             this.program = program;
             this.oracle = oracle;
-            program.rules().forEach(rule -> toProcess.add(rule.head()));
         }
 
         private boolean deriveBody(List<Atom> body) throws InterruptedException {
@@ -33,7 +32,7 @@ public class ParallelDeriver implements AbstractDeriver {
                 CompletableFuture<Boolean> existingFuture = knownStatements.computeIfAbsent(a, at -> new CompletableFuture<>());
                 boolean IamLeader = (existingFuture == newFuture);
 
-                if (IamLeader && !knownStatements.containsKey(a)) {
+                if (IamLeader) {
                     toProcess.put(a); // no ktoś się tym zajmie kiedyś
                 }
 
@@ -56,8 +55,14 @@ public class ParallelDeriver implements AbstractDeriver {
                 return;
             }
             try {
-                while (!toProcess.isEmpty()) { // dopóki nie wszystkie atomy zostały przetworzone
-                    Atom atom = toProcess.take(); // bierzemy kolejny atom do przetworzenia
+                while (true) { // dopóki nie wszystkie atomy zostały przetworzone
+                    Atom atom = null; // bierzemy kolejny atom do przetworzenia
+                    try {
+                        atom = toProcess.take();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                     CompletableFuture<Boolean> newFuture = new CompletableFuture<>();
                     CompletableFuture<Boolean> existingFuture = knownStatements.computeIfAbsent(atom, a -> newFuture);
                     boolean IamLeader = (existingFuture == newFuture); // jeżeli to my jesteśmy liderami, to zanczy
@@ -72,7 +77,8 @@ public class ParallelDeriver implements AbstractDeriver {
                         } else {
                             // samodzielnie wyprowadzamy szukaną wartość
                             // szukamy reguł o tym samym predykacie co atom
-                            List<Rule> rules = program.rules().stream().filter(r -> r.head().predicate().equals(atom.predicate())).toList();
+                            Atom finalAtom = atom;
+                            List<Rule> rules = program.rules().stream().filter(r -> r.head().predicate().equals(finalAtom.predicate())).toList();
                             if (rules.isEmpty()) {
                                 existingFuture.complete(false);
                                 continue; //??????????? czy return????
@@ -94,7 +100,7 @@ public class ParallelDeriver implements AbstractDeriver {
                                     boolean result = deriveBody(assignedBody);
                                     if (result) {
                                         existingFuture.complete(true);
-                                        return;
+                                        break;
                                     }
                                 }
                             }
@@ -110,9 +116,6 @@ public class ParallelDeriver implements AbstractDeriver {
                         }
                     }
 
-
-
-
                 }
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
@@ -127,10 +130,34 @@ public class ParallelDeriver implements AbstractDeriver {
         // wpisują wyliczone przez siebie wartości tak, żeby nie liczyć ich niepotrzebnie wiele razy
         ConcurrentHashMap<Atom, Thread> liders = new ConcurrentHashMap<>(); // tutaj wątek, który jako pierwszy rozpoczyna
         // liczenie wartości dla danego atomu wpisuje siebie jako lidera = wiadomo, kto jest "odpowiedzialny" za ten atom
-        BlockingQueue<Atom> toProcess; // kolejka atomów do przetworzenia przez wątki robocze
+        BlockingQueue<Atom> toProcess = new LinkedBlockingQueue<>(); // kolejka atomów do przetworzenia przez wątki robocze
+
+        for (Atom query : input.queries()) {
+            toProcess.put(query);
+        }
+
+        List<Thread> workers = new ArrayList<>();
+        for (int i = 0; i < numWorkers; i++) {
+            Thread worker = new Thread(new Worker(toProcess, knownStatements, liders, input, oracle));
+            workers.add(worker);
+            worker.start();
+        }
+
+        for (Thread worker : workers) {
+            worker.join();
+        }
+
+        Map<Atom, Boolean> results = new HashMap<>();
+        for (Atom q : input.queries()) {
+            try {
+                results.put(q, knownStatements.get(q).get());
+            } catch (ExecutionException e) {
+                throw new RuntimeException(e);
+            }
+        }
 
 
-
-        return Map.of();
+        return results;
+//        return Map.of();
     }
 }
