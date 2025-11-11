@@ -1,10 +1,7 @@
 package cp2025.engine;
 
 import java.util.*;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.*;
 
 import cp2025.engine.Datalog.*;
 
@@ -14,7 +11,7 @@ public class ParallelDeriver implements AbstractDeriver {
     public ParallelDeriver(int numWorkers) { this.numWorkers = numWorkers; }
 
     private static class Worker implements Runnable {
-        private BlockingQueue<Atom> toProcess; // współdzielona kolejka atomów do przerobienia
+        private BlockingQueue<Atom> toProcess = new LinkedBlockingQueue<>(); // współdzielona kolejka atomów do przerobienia
         private ConcurrentHashMap<Atom, CompletableFuture<Boolean>> knownStatements; // współdzielona mapa do wpisywania policzonych w trakcie wyników
         private ConcurrentHashMap<Atom, Thread> liders; // współdzielona mapa liderów dla każdego obecnie obliczanego atomu
         private Program program;
@@ -27,6 +24,28 @@ public class ParallelDeriver implements AbstractDeriver {
             this.liders = liders;
             this.program = program;
             this.oracle = oracle;
+            program.rules().forEach(rule -> toProcess.add(rule.head()));
+        }
+
+        private boolean deriveBody(List<Atom> body) throws InterruptedException {
+            for (Atom a : body) {
+                CompletableFuture<Boolean> newFuture = new CompletableFuture<>();
+                CompletableFuture<Boolean> existingFuture = knownStatements.computeIfAbsent(a, at -> new CompletableFuture<>());
+                boolean IamLeader = (existingFuture == newFuture);
+
+                if (IamLeader && !knownStatements.containsKey(a)) {
+                    toProcess.put(a); // no ktoś się tym zajmie kiedyś
+                }
+
+                try {
+                    if (!existingFuture.get()) {
+                        return false;
+                    }
+                } catch (ExecutionException | InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            return true;
         }
 
         @Override
@@ -50,6 +69,36 @@ public class ParallelDeriver implements AbstractDeriver {
                             boolean value = oracle.calculate(atom);
                             existingFuture.complete(value); // wstawiamy wynik i odblokowywujemy inne wątki czekające
                             // na wynik
+                        } else {
+                            // samodzielnie wyprowadzamy szukaną wartość
+                            // szukamy reguł o tym samym predykacie co atom
+                            List<Rule> rules = program.rules().stream().filter(r -> r.head().predicate().equals(atom.predicate())).toList();
+                            if (rules.isEmpty()) {
+                                existingFuture.complete(false);
+                                continue; //??????????? czy return????
+                            }
+
+                            for (Rule rule : rules) {
+                                // dla każdej reguły sprawdzamy, czy jej ciało jest prawdziwe
+                                Optional<List<Atom>> partiallyAssignedBody = Unifier.unify(rule, atom);
+                                if (partiallyAssignedBody.isEmpty())
+                                    continue;
+
+                                List<Variable> variables = Datalog.getVariables(partiallyAssignedBody.get());
+                                FunctionGenerator<Variable, Constant> iterator = new FunctionGenerator<>(variables,
+                                        program.constants());
+
+                                for (Map<Variable, Constant> assignment : iterator) {
+                                    List<Atom> assignedBody = Unifier.applyAssignment(partiallyAssignedBody.get(),
+                                            assignment);
+                                    boolean result = deriveBody(assignedBody);
+                                    if (result) {
+                                        existingFuture.complete(true);
+                                        return;
+                                    }
+                                }
+                            }
+                            existingFuture.complete(false);
                         }
                     } else {
                         // czekamy na wynik obliczony przez lidera
