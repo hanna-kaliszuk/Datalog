@@ -150,7 +150,7 @@ public class ParallelDeriver implements AbstractDeriver {
                         knownStatements.put(atom, result.derivable);
 
                         // usuwamy zapytanie z aktualnie obliczanych i przerywamy wszystkich liczacych
-                        Set<Thread> threads = activeComputations.get(atom);
+                        Set<Thread> threads = activeComputations.remove(atom);
 
                         if (threads != null) {
                             for (Thread t : threads) {
@@ -172,11 +172,12 @@ public class ParallelDeriver implements AbstractDeriver {
             } finally {
                 localInProgressStatements.remove(atom);
 
-                Set<Thread> threads = activeComputations.remove(atom);
+                Set<Thread> threads = activeComputations.get(atom);
                 if (threads != null) {
-                    threads.remove(Thread.currentThread());
-                    if (threads.isEmpty()) {
-                        activeComputations.remove(atom, threads);
+                    threads.remove(Thread.currentThread()); // usuwam sie z pracujacych nad tym zapytaniem, reszta
+                    // pracuje dalej
+                    if (threads.isEmpty()) { // jestem ostatnim watkiem pracujacym nad tym zapytaniem
+                        activeComputations.remove(atom, threads); // wiec sprzatam mape
                     }
                 }
             }
