@@ -14,13 +14,13 @@ import cp2025.engine.AbstractOracle;
 import cp2025.engine.AbstractDeriver;
 import cp2025.engine.Datalog;
 import cp2025.engine.NullOracle;
-import cp2025.engine.ParallelDeriver;
+import cp2025.engine.ParallelDeriverV1;
 import cp2025.engine.Parser;
 
 
 public class CorrectnessTests {
     // static AbstractDeriver testedDeriver = new SimpleDeriver();
-    static AbstractDeriver testedDeriver = new ParallelDeriver(4);
+    static AbstractDeriver testedDeriver = new ParallelDeriverV1(4);
 
     @Test
     public void testBasic() throws IOException {

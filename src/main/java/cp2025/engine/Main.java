@@ -11,7 +11,7 @@ public class Main {
 
     /**
      * Parses a {@link Datalog.Program} from standard input,
-     * creates a {@link NullOracle} and a {@link ParallelDeriver},
+     * creates a {@link NullOracle} and a {@link ParallelDeriverV1},
      * runs {@link AbstractDeriver#derive(Datalog.Program, AbstractOracle)}
      * and then prints the results: the status of derivability of queried atoms.
      *
