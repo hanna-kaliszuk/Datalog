@@ -114,13 +114,6 @@ public class ParallelDeriver implements AbstractDeriver {
             if (knownStatements.containsKey(atom))
                 return new DerivationResult(knownStatements.get(atom), Set.of());
 
-            // jezeli moge obliczyc bezposrednio z wyroczni to to robie
-            if (oracle.isCalculatable(atom.predicate())) {
-                boolean result = oracle.calculate(atom);
-                knownStatements.put(atom, result);
-                return new DerivationResult(result, Set.of());
-            }
-
             // sprawdzamy, czy nie ma cyklu - czy ten sam watek nie chcial juz wczesniej tego policzyc
             if (localInProgressStatements.contains(atom))
                 return new DerivationResult(false, Set.of(atom));
@@ -135,43 +128,48 @@ public class ParallelDeriver implements AbstractDeriver {
                 if (knownStatements.containsKey(atom))
                     return new DerivationResult(knownStatements.get(atom), Set.of());
 
-                // jezeli nie, to zaczynamy obliczenia
-                // zapisujemy u siebie, ze zajmujemy sie tym atomem
-                localInProgressStatements.add(atom);
+                // jezeli moge obliczyc bezposrednio z wyroczni to to robie
+                if (oracle.isCalculatable(atom.predicate())) {
+                    boolean val = oracle.calculate(atom); // moze rzucic interrupted exception
+                    result = new DerivationResult(val, Set.of());
+                } else {
+                    // jezeli nie, to zaczynamy obliczenia
+                    // zapisujemy u siebie, ze zajmujemy sie tym atomem
+                    localInProgressStatements.add(atom);
 
-                try {
-                    result = deriveNewStatement(atom);
-
+                    try {
+                        result = deriveNewStatement(atom);
+                    } finally {
+                        localInProgressStatements.remove(atom);
+                    }
+                }
                     // po obliczeniu mozemy usunac z lokalnie aktywnych
 
                     // sprawdzamy jak nam poszlo i dajemy znac innym, ze wynik jest gotowy do uzycia
                     // obliczenia zostaly doprowadzone do konca, gdy wynik jest pewny <=> TRUE lub (FALSE i puste FAILEDSTATEMENTS)
-                    if (result.derivable || result.failedStatements.isEmpty()) {
-                        knownStatements.put(atom, result.derivable);
+                if (result.derivable || result.failedStatements.isEmpty()) {
+                    knownStatements.put(atom, result.derivable);
 
-                        // usuwamy zapytanie z aktualnie obliczanych i przerywamy wszystkich liczacych
-                        Set<Thread> threads = activeComputations.remove(atom);
+                    // usuwamy zapytanie z aktualnie obliczanych i przerywamy wszystkich liczacych
+                    Set<Thread> threads = activeComputations.remove(atom);
 
-                        if (threads != null) {
-                            for (Thread t : threads) {
-                                if (t != Thread.currentThread())
-                                    t.interrupt();
-                            }
+                    if (threads != null) {
+                        for (Thread t : threads) {
+                            if (t != Thread.currentThread())
+                                t.interrupt();
                         }
                     }
+                }
 
-                    return result;
-                } catch (InterruptedException e) {
-                    if (knownStatements.containsKey(atom)) {
-                        Thread.interrupted();
-                        return new DerivationResult(knownStatements.get(atom), Set.of());
-                    } else {
-                        throw e;
-                    }
+                return result;
+            } catch (InterruptedException e) {
+                if (knownStatements.containsKey(atom)) {
+                    Thread.interrupted();
+                    return new DerivationResult(knownStatements.get(atom), Set.of());
+                } else {
+                    throw e;
                 }
             } finally {
-                localInProgressStatements.remove(atom);
-
                 Set<Thread> threads = activeComputations.get(atom);
                 if (threads != null) {
                     threads.remove(Thread.currentThread()); // usuwam sie z pracujacych nad tym zapytaniem, reszta
@@ -186,7 +184,7 @@ public class ParallelDeriver implements AbstractDeriver {
         private DerivationResult deriveNewStatement(Atom atom) throws InterruptedException {
             List<Rule> rules = predicateToRules.get(atom.predicate());
             if (rules == null) {
-                return new DerivationResult(false, Set.of(atom));
+                return new Worker.DerivationResult(false, Set.of(atom));
             }
 
             Set<Atom> failedStatements = new HashSet<>();
