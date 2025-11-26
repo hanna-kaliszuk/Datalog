@@ -102,12 +102,14 @@ public class Parallel implements AbstractDeriver {
         }
 
         private DerivationResult deriveStatement (Atom atom) throws InterruptedException {
-            if (Thread.interrupted()) // jak ktos kazal przestac, to przestajemy
-                throw new InterruptedException();
+
 
             Boolean cachedResult = knownStatements.get(atom);
             if (cachedResult != null)
                 return new DerivationResult(cachedResult, Set.of());
+
+            if (Thread.interrupted()) // jak ktos kazal przestac, to przestajemy
+                throw new InterruptedException();
 
             // patrzymy, czy nie jestesmy w petli
             if (localInProgress.contains(atom))
@@ -150,6 +152,7 @@ public class Parallel implements AbstractDeriver {
             } catch (InterruptedException e) {
                 Boolean existing = knownStatements.get(atom);
                 if (existing != null) {
+                    Thread.interrupted();
                     return new DerivationResult(existing, Set.of());
                 } else {
                     throw e;
@@ -168,7 +171,7 @@ public class Parallel implements AbstractDeriver {
             List<Rule> rules = predicateToRules.get(atom.predicate());
 
             if (rules == null)
-                return new DerivationResult(false, Set.of());
+                return new DerivationResult(false, Set.of(atom));
 
             Set<Atom> failedStatements = new HashSet<>();
 
