@@ -184,7 +184,7 @@ public class ParallelDeriver implements AbstractDeriver {
         private DerivationResult deriveNewStatement(Atom atom) throws InterruptedException {
             List<Rule> rules = predicateToRules.get(atom.predicate());
             if (rules == null) {
-                return new Worker.DerivationResult(false, Set.of(atom));
+                return new Worker.DerivationResult(false, Set.of());
             }
 
             Set<Atom> failedStatements = new HashSet<>();

@@ -33,7 +33,7 @@ public class Main {
             System.out.print(program);
 
             //AbstractDeriver deriver = new SimpleDeriver();
-            AbstractDeriver deriver = new ParallelDeriver(5);
+            AbstractDeriver deriver = new Parallel(5);
             try {
                 Map<Datalog.Atom, Boolean> results = deriver.derive(program, oracle);
                 for (Datalog.Atom query : program.queries()) {
