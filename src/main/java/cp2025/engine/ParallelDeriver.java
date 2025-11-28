@@ -3,9 +3,12 @@ package cp2025.engine;
 import cp2025.engine.Datalog.*;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ParallelDeriver implements AbstractDeriver {
     private final int numWorkers;
+    // 1. A global flag to signal actual shutdown vs optimization interrupts
+    private final AtomicBoolean shutdownSignal = new AtomicBoolean(false);
 
     public ParallelDeriver(int numWorkers) {
         this.numWorkers = numWorkers;
@@ -13,18 +16,23 @@ public class ParallelDeriver implements AbstractDeriver {
 
     @Override
     public Map<Datalog.Atom, Boolean> derive(Datalog.Program input, AbstractOracle oracle) throws InterruptedException {
-        Map<Predicate, List<Rule>> predicateToRules = input.rules().stream().collect(java.util.stream.Collectors.groupingBy(rule -> rule.head().predicate()));
+        Map<Predicate, List<Rule>> predicateToRules = input.rules().stream()
+                .collect(java.util.stream.Collectors.groupingBy(rule -> rule.head().predicate()));
         ConcurrentHashMap<Atom, Boolean> knownStatements = new ConcurrentHashMap<>();
         ConcurrentHashMap<Atom, Set<Thread>> activeComputation = new ConcurrentHashMap<>();
         ConcurrentLinkedQueue<Atom> taskQueue = new ConcurrentLinkedQueue<>();
         taskQueue.addAll(input.queries());
         CountDownLatch latch = new CountDownLatch(numWorkers);
 
+        // Reset the signal for this run
+        shutdownSignal.set(false);
+
         List<Thread> workers = new ArrayList<>();
         for (int i = 0; i < numWorkers; i++) {
             workers.add(new Thread(new Worker(input, oracle, taskQueue, predicateToRules, knownStatements,
-                    activeComputation, latch)));
+                    activeComputation, latch, shutdownSignal)));
         }
+
         for (Thread t : workers) {
             t.start();
         }
@@ -32,6 +40,8 @@ public class ParallelDeriver implements AbstractDeriver {
         try {
             latch.await();
         } catch (InterruptedException e) {
+            // 2. Set the signal BEFORE interrupting workers so they know to stop
+            shutdownSignal.set(true);
             for (Thread t : workers) t.interrupt();
             throw e;
         }
@@ -52,11 +62,14 @@ public class ParallelDeriver implements AbstractDeriver {
         private final ConcurrentHashMap<Atom, Set<Thread>> activeComputation;
         private final Set<Atom> localInProgress;
         private final CountDownLatch latch;
+        private final AtomicBoolean shutdownSignal;
 
         public Worker(Program program, AbstractOracle oracle, Queue<Atom> queue,
                       Map<Predicate, List<Rule>> predicateToRules,
                       ConcurrentHashMap<Atom, Boolean> knownStatements,
-                      ConcurrentHashMap<Atom, Set<Thread>> activeComputation, CountDownLatch latch) {
+                      ConcurrentHashMap<Atom, Set<Thread>> activeComputation,
+                      CountDownLatch latch,
+                      AtomicBoolean shutdownSignal) {
             this.program = program;
             this.oracle = oracle;
             this.taskQueue = queue;
@@ -65,6 +78,7 @@ public class ParallelDeriver implements AbstractDeriver {
             this.activeComputation = activeComputation;
             this.localInProgress = new HashSet<>();
             this.latch = latch;
+            this.shutdownSignal = shutdownSignal;
         }
 
         private record DerivationResult(boolean derivable, Set<Atom> failedStatements) {
@@ -73,52 +87,66 @@ public class ParallelDeriver implements AbstractDeriver {
         @Override
         public void run() {
             try {
+                Atom task = null;
                 while(true) {
-                    if (Thread.interrupted()) // jezeli ktos kazal watkowi umrzec, to umiera
-                        return;
+                    // Check for global shutdown
+                    if (shutdownSignal.get()) return;
 
-                    // pobieramy zadanie do wykonania jezeli jeszcze jakies jest, a jak nie to umieramy
-                    Atom task = taskQueue.poll();
+                    // Only poll a new task if we finished the previous one
+                    if (task == null) {
+                        task = taskQueue.poll();
+                    }
+
+                    // If queue is empty and we have no current task, we are done
                     if (task == null) break;
 
-                    // tutaj mamy jakis atom do policzenia, wiec to robimy
                     try {
-                        localInProgress.clear(); // na wszelki wypadek to czyscimy
+                        localInProgress.clear();
                         DerivationResult result = deriveStatement(task);
 
                         if (result.derivable || result.failedStatements.isEmpty()) {
                             knownStatements.putIfAbsent(task, result.derivable);
                         }
+
+                        // Task completed successfully, clear variable so we poll next time
+                        task = null;
+
                     } catch (InterruptedException e) {
-                        // gdy wychodzimy z deriveStatement przez wyjatek, to moze to byc z 2 powodow:
-                        // 1. wyszlismy, bo ktos inny szybciej obliczyl nasze zadanie
+                        // 3. Robust Interruption Handling
                         if (knownStatements.containsKey(task)) {
-                            //nic
-                        } else { // tutaj dostalismy jakies "duze" przerwanie wiec watek musi umrzec
-                            break;
+                            // Case A: Another thread finished this task.
+                            // Treat as success, clear task variable to pick up a new one.
+                            task = null;
+                        } else if (shutdownSignal.get()) {
+                            // Case B: The main thread told us to shut down.
+                            return;
+                        } else {
+                            // Case C: STALE INTERRUPT.
+                            // We received an interrupt meant for a previous task (or a race condition),
+                            // but the current 'task' is not done yet.
+                            // We MUST retry 'task'. Do NOT set task = null.
+
+                            // Clear the interrupted status so we can continue processing
+                            Thread.interrupted();
                         }
                     }
                 }
-            } finally { // jak juz wszystko sie obroci, to dajemy znac, ze wyslalismy sygnal
+            } finally {
                 latch.countDown();
             }
         }
 
         private DerivationResult deriveStatement (Atom atom) throws InterruptedException {
-
-
             Boolean cachedResult = knownStatements.get(atom);
             if (cachedResult != null)
                 return new DerivationResult(cachedResult, Set.of());
 
-            if (Thread.interrupted()) // jak ktos kazal przestac, to przestajemy
+            if (Thread.interrupted() || shutdownSignal.get())
                 throw new InterruptedException();
 
-            // patrzymy, czy nie jestesmy w petli
             if (localInProgress.contains(atom))
                 return new DerivationResult(false, Set.of(atom));
 
-            // rejestrujemy sie jako aktywnie liczacy ten watek
             Set<Thread> myThreadSet = activeComputation.computeIfAbsent(atom, k -> ConcurrentHashMap.newKeySet());
             myThreadSet.add(Thread.currentThread());
 
@@ -126,19 +154,18 @@ public class ParallelDeriver implements AbstractDeriver {
             try {
                 localInProgress.add(atom);
 
-                // patrzymy czy da sie wyliczyc bezposrenio z wyroczni
                 if (oracle.isCalculatable(atom.predicate())) {
                     boolean val = oracle.calculate(atom);
                     result = new DerivationResult(val, Set.of());
-                } else { // jezeli nie, to zaczynamy normalne obliczenia
+                } else {
                     result = deriveNewStatement(atom);
                 }
 
-                if (result.derivable || result.failedStatements.isEmpty()) { // mamy wynik deterministyczny (niezwiazany z petla)
+                if (result.derivable || result.failedStatements.isEmpty()) {
                     Boolean existing = knownStatements.putIfAbsent(atom, result.derivable);
 
-                    if (existing == null) { // my zapisalismy wynik - przerywamy pozostalych
-                        // usuwamy zapytanie z aktualnie obliczanych i przerywamy wszystkich liczacych
+                    if (existing == null) {
+                        // We solved it first. Remove from active computation and interrupt others.
                         Set<Thread> threads = activeComputation.remove(atom);
 
                         if (threads != null) {
@@ -155,6 +182,7 @@ public class ParallelDeriver implements AbstractDeriver {
             } catch (InterruptedException e) {
                 Boolean existing = knownStatements.get(atom);
                 if (existing != null) {
+                    // Swallow exception if result exists (cleanup happens in finally)
                     Thread.interrupted();
                     return new DerivationResult(existing, Set.of());
                 } else {
