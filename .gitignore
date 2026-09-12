@@ -1,2 +1,13 @@
-# Project exclude paths
-/target/
+# Java / Maven
+target/
+*.class
+
+# IntelliJ IDEA
+.idea/
+
+# VS Code
+.vscode/*
+!.vscode/java-formatter.xml
+
+# macOS
+.DS_Store
