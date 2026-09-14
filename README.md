@@ -352,6 +352,8 @@ make datalog
 - All worker threads are terminated before `derive()` returns.
 - The repository contains both the implemented `ParallelDeriver` and the provided single-threaded reference implementation.
 
-## Course
+## Academic Context
 
 This project was developed as a course assignment for **Concurrent Programming** at the University of Warsaw during the Winter Semester 2025/26.
+
+The course provided the Datalog parser, single-threaded reference implementation and supporting infrastructure. The main task was to implement the multithreaded query evaluation in `ParallelDeriver`. 
